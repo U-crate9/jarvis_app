@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'home_screen.dart';
+import 'background_service.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  BackgroundService.init();
   runApp(const JarvisApp());
 }
 
@@ -24,7 +28,7 @@ class JarvisApp extends StatelessWidget {
           surface: Color(0xFF0B0F1A),
         ),
       ),
-      home: const HomeScreen(),
+      home: WithForegroundTask(child: const HomeScreen()),
     );
   }
 }

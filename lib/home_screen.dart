@@ -4,6 +4,8 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'api_service.dart';
 import 'settings_screen.dart';
+import 'device_controller.dart';
+import 'background_service.dart';
 
 enum JarvisState { idle, listeningForWake, listeningForCommand, thinking, speaking }
 
@@ -29,9 +31,17 @@ class _HomeScreenState extends State<HomeScreen>
 
   JarvisState _state = JarvisState.idle;
   bool _speechAvailable = false;
+  bool _commandCaptured = false;
   static const String _wakePhrase = 'hello jarvis';
 
   late AnimationController _pulseController;
+
+  static const List<String> _thinkingFillers = [
+    'Give me a sec, boss.',
+    'One moment.',
+    'On it.',
+    'Let me check that.',
+  ];
 
   @override
   void initState() {
@@ -41,6 +51,12 @@ class _HomeScreenState extends State<HomeScreen>
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
     _initSpeech();
+    _initBackgroundService();
+  }
+
+  Future<void> _initBackgroundService() async {
+    await BackgroundService.requestPermissions();
+    await BackgroundService.start();
   }
 
   Future<void> _initSpeech() async {
@@ -50,16 +66,38 @@ class _HomeScreenState extends State<HomeScreen>
       onError: (e) => debugPrint('Speech error: $e'),
     );
     if (_speechAvailable) {
+      _speakGreeting();
       _startWakeListening();
     } else {
       setState(() {});
     }
   }
 
+  Future<void> _speakGreeting() async {
+    final hour = DateTime.now().hour;
+    String greeting;
+    if (hour >= 0 && hour < 5) {
+      greeting = "Hello boss, you're up late tonight.";
+    } else if (hour < 12) {
+      greeting = 'Good morning, boss. Jarvis is online.';
+    } else if (hour < 17) {
+      greeting = 'Good afternoon, boss. Ready when you are.';
+    } else {
+      greeting = 'Good evening, boss. Jarvis is online.';
+    }
+    setState(() => _messages.add(ChatEntry(greeting, false)));
+    await _tts.setSpeechRate(0.48);
+    await _tts.speak(greeting);
+  }
+
   void _onSpeechStatus(String status) {
     // If listening stops on its own (timeout), restart the wake-word loop.
     if (status == 'done' || status == 'notListening') {
       if (_state == JarvisState.listeningForWake) {
+        Future.delayed(const Duration(milliseconds: 400), _startWakeListening);
+      } else if (_state == JarvisState.listeningForCommand && !_commandCaptured) {
+        // Timed out waiting for a command after the wake word — go back to
+        // listening for the wake word instead of getting stuck.
         Future.delayed(const Duration(milliseconds: 400), _startWakeListening);
       }
     }
@@ -87,6 +125,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _startCommandListening() {
+    _commandCaptured = false;
     setState(() => _state = JarvisState.listeningForCommand);
     _speech.listen(
       onResult: _onCommandResult,
@@ -103,12 +142,33 @@ class _HomeScreenState extends State<HomeScreen>
       _startWakeListening();
       return;
     }
+    _commandCaptured = true;
 
     setState(() {
       _messages.add(ChatEntry(command, true));
       _state = JarvisState.thinking;
     });
     _scrollToBottom();
+
+    // Try local device actions first (open app, set alarm) — no API call needed.
+    final handledLocally = await DeviceController.tryHandle(command);
+    if (handledLocally) {
+      const reply = 'Done, boss.';
+      setState(() {
+        _messages.add(ChatEntry(reply, false));
+        _state = JarvisState.speaking;
+      });
+      _scrollToBottom();
+      await _tts.setSpeechRate(0.48);
+      await _tts.speak(reply);
+      _tts.setCompletionHandler(() => _startWakeListening());
+      return;
+    }
+
+    // Speak a quick filler while we wait on the API, for a snappier feel.
+    final filler = (_thinkingFillers..shuffle()).first;
+    await _tts.setSpeechRate(0.5);
+    unawaited(_tts.speak(filler));
 
     final reply = await ApiService.sendMessage(command);
 
@@ -124,6 +184,8 @@ class _HomeScreenState extends State<HomeScreen>
       _startWakeListening();
     });
   }
+
+  void unawaited(Future<void> future) {}
 
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 100), () {
@@ -179,16 +241,76 @@ class _HomeScreenState extends State<HomeScreen>
       ),
       body: Column(
         children: [
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           _buildOrb(active),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Text(
             _statusLabel,
             style: const TextStyle(color: Colors.white54, fontSize: 13, letterSpacing: 1),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
+          _buildStatusPanels(),
+          const SizedBox(height: 12),
           Expanded(child: _buildTranscript()),
         ],
+      ),
+    );
+  }
+
+  Widget _buildStatusPanels() {
+    final panels = [
+      ('SYSTEM', _speechAvailable ? 'ONLINE' : 'OFFLINE', _speechAvailable),
+      ('MODEL', 'CONNECTED', true),
+      ('MIC', _state == JarvisState.listeningForCommand ? 'ACTIVE' : 'STANDBY',
+          _state == JarvisState.listeningForCommand),
+    ];
+    return SizedBox(
+      height: 64,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: panels.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, i) {
+          final (label, value, isUp) = panels[i];
+          return Container(
+            width: 130,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0B0F1A),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(label,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 10, letterSpacing: 1)),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: isUp ? const Color(0xFF00E5FF) : Colors.white24,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(value,
+                        style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600)),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
@@ -203,8 +325,8 @@ class _HomeScreenState extends State<HomeScreen>
         return Transform.scale(
           scale: scale,
           child: Container(
-            width: 130,
-            height: 130,
+            width: 120,
+            height: 120,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               gradient: RadialGradient(
@@ -223,8 +345,8 @@ class _HomeScreenState extends State<HomeScreen>
             ),
             child: Center(
               child: Container(
-                width: 60,
-                height: 60,
+                width: 54,
+                height: 54,
                 decoration: const BoxDecoration(
                   shape: BoxShape.circle,
                   color: Color(0xFF00E5FF),
