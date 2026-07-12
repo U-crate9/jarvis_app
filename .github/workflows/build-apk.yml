@@ -35,6 +35,21 @@ jobs:
             flutter create --platforms=android --org com.jarvis --project-name jarvis_app .
           fi
 
+      - name: Force compileSdk 36 for all plugin modules (fixes AAR metadata conflicts)
+        run: |
+          cat >> android/build.gradle << 'GRADLEEOF'
+
+subprojects {
+    afterEvaluate { proj ->
+        if (proj.hasProperty('android')) {
+            proj.android {
+                compileSdkVersion 36
+            }
+        }
+    }
+}
+GRADLEEOF
+
       - name: Restore our source files
         run: |
           cp -r /tmp/backup/lib .
