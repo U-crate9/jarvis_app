@@ -13,6 +13,7 @@
 - "Set an alarm for 5 am" — Clock অ্যাপে অ্যালার্ম সেট করে
 - "latest news" জিজ্ঞেস করলে আলাদা News API endpoint ব্যবহার করবে (কনফিগার করা থাকলে)
 - ব্যাকগ্রাউন্ডে চলার জন্য foreground service (Android 14+ এর মাইক্রোফোন সার্ভিস টাইপ সহ)
+- **অ্যাপের বাইরে থেকেও কাজ করবে** — অন্য অ্যাপ চালানোর সময় "Hello Jarvis" বললে একটা ছোট overlay window ভেসে উঠবে, উত্তর দেখাবে/বলবে (ইন্সটলের পর "Display over other apps" পারমিশন দিতে হবে)
 - Settings screen — Picovoice key, main AI endpoint, news endpoint সব এক জায়গায়
 
 ## ইন্সটলের আগে যা যা জোগাড় করতে হবে

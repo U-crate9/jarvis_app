@@ -7,6 +7,8 @@ import 'settings_screen.dart';
 import 'device_controller.dart';
 import 'background_service.dart';
 import 'dockable_panel.dart';
+import 'waveform_widget.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
 enum JarvisState { starting, listeningForWake, listeningForCommand, thinking, speaking }
 
@@ -23,8 +25,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen> {
   final stt.SpeechToText _speech = stt.SpeechToText();
   final FlutterTts _tts = FlutterTts();
   final List<ChatEntry> _messages = [];
@@ -34,8 +35,6 @@ class _HomeScreenState extends State<HomeScreen>
   bool _speechAvailable = false;
   bool _commandCaptured = false;
   static const String _wakePhrase = 'hello jarvis';
-
-  late AnimationController _pulseController;
 
   static const List<String> _thinkingFillers = [
     'Give me a sec, boss.',
@@ -47,10 +46,6 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
     _bootUp();
   }
 
@@ -63,6 +58,11 @@ class _HomeScreenState extends State<HomeScreen>
 
     await BackgroundService.requestPermissions();
     await BackgroundService.start();
+
+    final overlayGranted = await FlutterOverlayWindow.isPermissionGranted();
+    if (!overlayGranted) {
+      await FlutterOverlayWindow.requestPermission();
+    }
 
     if (_speechAvailable) {
       await _speakGreeting();
@@ -112,12 +112,39 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  void _onWakeResult(dynamic result) {
+  void _onWakeResult(dynamic result) async {
     final heard = result.recognizedWords.toString().toLowerCase();
     if (heard.contains(_wakePhrase)) {
       _speech.stop();
+      await _showJarvisOverlay('Listening…', active: true);
       _startCommandListening();
     }
+  }
+
+  Future<void> _showJarvisOverlay(String text, {required bool active}) async {
+    try {
+      final granted = await FlutterOverlayWindow.isPermissionGranted();
+      if (!granted) return;
+      final running = await FlutterOverlayWindow.isActive();
+      if (!running) {
+        await FlutterOverlayWindow.showOverlay(
+          height: 220,
+          width: 300,
+          alignment: OverlayAlignment.center,
+          enableDrag: true,
+          overlayTitle: 'Jarvis',
+        );
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+      FlutterOverlayWindow.shareData({'text': text, 'active': active});
+    } catch (_) {
+      // Overlay permission may not be granted yet — safe to ignore,
+      // the in-app UI still works normally.
+    }
+  }
+
+  void _closeJarvisOverlay() {
+    FlutterOverlayWindow.closeOverlay().catchError((_) {});
   }
 
   void _startCommandListening() {
@@ -135,6 +162,7 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _onCommandResult(dynamic result) async {
     final command = result.recognizedWords.toString().trim();
     if (command.isEmpty) {
+      _closeJarvisOverlay();
       _startWakeListening();
       return;
     }
@@ -145,10 +173,13 @@ class _HomeScreenState extends State<HomeScreen>
       _state = JarvisState.thinking;
     });
     _scrollToBottom();
+    await _showJarvisOverlay('You: $command\n\nThinking…', active: false);
 
     final handledLocally = await DeviceController.tryHandle(command);
     if (handledLocally) {
       await _speakAndShow('Done, boss.');
+      await _showJarvisOverlay('Done, boss.', active: false);
+      _scheduleOverlayClose();
       _startWakeListening();
       return;
     }
@@ -162,7 +193,13 @@ class _HomeScreenState extends State<HomeScreen>
 
     final reply = await ApiService.sendMessage(command, isNewsQuery: isNewsQuery);
     await _speakAndShow(reply);
+    await _showJarvisOverlay(reply, active: false);
+    _scheduleOverlayClose();
     _startWakeListening();
+  }
+
+  void _scheduleOverlayClose() {
+    Future.delayed(const Duration(seconds: 6), _closeJarvisOverlay);
   }
 
   Future<void> _speakAndShow(String text) async {
@@ -233,7 +270,7 @@ class _HomeScreenState extends State<HomeScreen>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _buildOrb(active),
+                WaveformIndicator(active: active),
                 const SizedBox(height: 10),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 60),
@@ -339,47 +376,6 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Widget _buildOrb(bool active) {
-    return AnimatedBuilder(
-      animation: _pulseController,
-      builder: (context, child) {
-        final scale = active
-            ? 1.0 + (_pulseController.value * 0.15)
-            : 1.0 + (_pulseController.value * 0.05);
-        return Transform.scale(
-          scale: scale,
-          child: Container(
-            width: 120,
-            height: 120,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: RadialGradient(
-                colors: [
-                  const Color(0xFF00E5FF).withOpacity(active ? 0.9 : 0.4),
-                  const Color(0xFF00E5FF).withOpacity(0.0),
-                ],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFF00E5FF).withOpacity(active ? 0.5 : 0.2),
-                  blurRadius: 40,
-                  spreadRadius: 10,
-                ),
-              ],
-            ),
-            child: Center(
-              child: Container(
-                width: 54,
-                height: 54,
-                decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF00E5FF)),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   Widget _buildTranscript() {
     if (_messages.isEmpty) {
       return const Center(
@@ -417,7 +413,6 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
-    _pulseController.dispose();
     _speech.stop();
     _tts.stop();
     super.dispose();

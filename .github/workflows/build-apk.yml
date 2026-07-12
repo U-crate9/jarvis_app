@@ -44,10 +44,13 @@ jobs:
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if ! grep -q "RECORD_AUDIO" "$MANIFEST"; then
-            sed -i 's/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">\n    <uses-permission android:name="android.permission.RECORD_AUDIO" \/>\n    <uses-permission android:name="android.permission.INTERNET" \/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" \/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" \/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" \/>\n    <uses-permission android:name="android.permission.WAKE_LOCK" \/>\n    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" \/>/' "$MANIFEST"
+            sed -i 's/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">\n    <uses-permission android:name="android.permission.RECORD_AUDIO" \/>\n    <uses-permission android:name="android.permission.INTERNET" \/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" \/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" \/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" \/>\n    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" \/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" \/>\n    <uses-permission android:name="android.permission.WAKE_LOCK" \/>\n    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" \/>/' "$MANIFEST"
           fi
           if ! grep -q "flutter_foreground_task.service.ForegroundService" "$MANIFEST"; then
             sed -i 's/<\/application>/    <service android:name="com.pravera.flutter_foreground_task.service.ForegroundService" android:foregroundServiceType="microphone" android:exported="false" \/>\n<\/application>/' "$MANIFEST"
+          fi
+          if ! grep -q "flutter_overlay_window.OverlayService" "$MANIFEST"; then
+            sed -i 's/<\/application>/    <service android:name="flutter.overlay.window.flutter_overlay_window.OverlayService" android:exported="false" android:foregroundServiceType="specialUse"><property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="jarvis_voice_overlay" \/><\/service>\n<\/application>/' "$MANIFEST"
           fi
           sed -i 's/android:label="jarvis_app"/android:label="Jarvis"/' "$MANIFEST"
           cat "$MANIFEST"

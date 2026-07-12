@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'home_screen.dart';
 import 'background_service.dart';
+import 'overlay_entry.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
