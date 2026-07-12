@@ -2,11 +2,10 @@ import 'package:flutter/material.dart';
 
 enum PanelCorner { topLeft, topRight, bottomLeft, bottomRight }
 
-/// A small draggable, dockable panel — snaps to whichever screen corner
-/// it's dragged nearest to, and double-tap toggles between a small
-/// docked card and a large expanded view. This is how the "multiple
-/// panels" look is achieved on a single mobile screen: panels dock to
-/// corners by default, and you pull the one you want into focus.
+/// A small draggable, dockable HUD-style panel — snaps to whichever screen
+/// corner it's dragged nearest to, and double-tap toggles between a small
+/// docked card and a large expanded view. Styled with a slight tilt and
+/// corner brackets for a sci-fi "control center" look.
 class DockablePanel extends StatefulWidget {
   final String title;
   final Widget child;
@@ -31,8 +30,8 @@ class _DockablePanelState extends State<DockablePanel> {
   Offset _dragOffset = Offset.zero;
   bool _dragging = false;
 
-  static const double _dockedWidth = 150;
-  static const double _dockedHeight = 110;
+  static const double _dockedWidth = 158;
+  static const double _dockedHeight = 116;
   static const double _margin = 12;
   static const double _topMargin = 100; // leave room for the app bar / orb
 
@@ -62,6 +61,53 @@ class _DockablePanelState extends State<DockablePanel> {
     if (!isLeft && isTop) return PanelCorner.topRight;
     if (isLeft && !isTop) return PanelCorner.bottomLeft;
     return PanelCorner.bottomRight;
+  }
+
+  // A tiny tilt per corner gives the "angled card" HUD look from the
+  // reference video, without affecting the (unrotated) drag hit-box.
+  double _tiltFor(PanelCorner corner) {
+    if (_expanded) return 0;
+    switch (corner) {
+      case PanelCorner.topLeft:
+        return -0.035;
+      case PanelCorner.topRight:
+        return 0.035;
+      case PanelCorner.bottomLeft:
+        return 0.025;
+      case PanelCorner.bottomRight:
+        return -0.025;
+    }
+  }
+
+  Widget _cornerBracket({required bool top, required bool left}) {
+    return Positioned(
+      top: top ? 4 : null,
+      bottom: top ? null : 4,
+      left: left ? 4 : null,
+      right: left ? null : 4,
+      child: SizedBox(
+        width: 10,
+        height: 10,
+        child: Stack(
+          children: [
+            Positioned(
+              top: top ? 0 : null,
+              bottom: top ? null : 0,
+              left: left ? 0 : null,
+              right: left ? null : 0,
+              child: Container(width: 10, height: 1.4, color: widget.accentColor.withOpacity(0.8)),
+            ),
+            Positioned(
+              top: top ? 0 : null,
+              bottom: top ? null : 0,
+              left: left ? 0 : null,
+              right: left ? null : 0,
+              child: Container(width: 1.4, height: 10, color: widget.accentColor.withOpacity(0.8)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -108,53 +154,94 @@ class _DockablePanelState extends State<DockablePanel> {
             _dragOffset = Offset.zero;
           });
         },
-        child: Container(
-          decoration: BoxDecoration(
-            color: const Color(0xFF0B0F1A).withOpacity(0.96),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: widget.accentColor.withOpacity(0.35)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.4),
-                blurRadius: 12,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          padding: const EdgeInsets.all(10),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(shape: BoxShape.circle, color: widget.accentColor),
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      widget.title,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 10,
-                        letterSpacing: 1,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  Icon(
-                    _expanded ? Icons.close_fullscreen : Icons.open_in_full,
-                    size: 12,
-                    color: Colors.white24,
-                  ),
+        child: AnimatedRotation(
+          turns: _tiltFor(_corner) / (2 * 3.14159265),
+          duration: _dragging ? Duration.zero : const Duration(milliseconds: 260),
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  const Color(0xFF0B0F1A).withOpacity(0.97),
+                  const Color(0xFF0B0F1A).withOpacity(0.90),
                 ],
               ),
-              const SizedBox(height: 6),
-              Expanded(child: widget.child),
-            ],
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: widget.accentColor.withOpacity(0.45), width: 1),
+              boxShadow: [
+                BoxShadow(
+                  color: widget.accentColor.withOpacity(0.18),
+                  blurRadius: 16,
+                  spreadRadius: 1,
+                ),
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.5),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Stack(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: widget.accentColor,
+                              boxShadow: [
+                                BoxShadow(color: widget.accentColor.withOpacity(0.8), blurRadius: 4),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              widget.title,
+                              style: TextStyle(
+                                color: widget.accentColor.withOpacity(0.9),
+                                fontSize: 10,
+                                letterSpacing: 1.6,
+                                fontWeight: FontWeight.bold,
+                                fontFamily: 'monospace',
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          Icon(
+                            _expanded ? Icons.close_fullscreen : Icons.open_in_full,
+                            size: 11,
+                            color: Colors.white24,
+                          ),
+                        ],
+                      ),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 5),
+                        child: Divider(height: 1, color: Colors.white12),
+                      ),
+                      Expanded(
+                        child: DefaultTextStyle.merge(
+                          style: const TextStyle(fontFamily: 'monospace'),
+                          child: widget.child,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _cornerBracket(top: true, left: true),
+                _cornerBracket(top: true, left: false),
+                _cornerBracket(top: false, left: true),
+                _cornerBracket(top: false, left: false),
+              ],
+            ),
           ),
         ),
       ),

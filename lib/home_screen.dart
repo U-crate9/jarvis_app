@@ -249,21 +249,25 @@ class _HomeScreenState extends State<HomeScreen>
           DockablePanel(
             title: 'TRANSCRIPT',
             initialCorner: PanelCorner.bottomLeft,
+            accentColor: const Color(0xFF00E5FF),
             child: _buildTranscript(),
           ),
           DockablePanel(
             title: 'STATUS',
             initialCorner: PanelCorner.topRight,
+            accentColor: const Color(0xFF3DDC84),
             child: _buildStatusPanelContent(),
           ),
           DockablePanel(
             title: 'NEWS',
             initialCorner: PanelCorner.bottomRight,
+            accentColor: const Color(0xFFFFB800),
             child: _buildNewsPanelContent(),
           ),
           DockablePanel(
             title: 'QUICK ACTIONS',
             initialCorner: PanelCorner.topLeft,
+            accentColor: const Color(0xFFB388FF),
             child: _buildQuickActionsContent(),
           ),
         ],
