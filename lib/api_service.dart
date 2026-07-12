@@ -9,6 +9,9 @@ class ApiService {
   static const _urlKey = 'api_url';
   static const _keyKey = 'api_key';
   static const _modelKey = 'api_model';
+  static const _newsUrlKey = 'news_api_url';
+  static const _newsKeyKey = 'news_api_key';
+  static const _newsModelKey = 'news_api_model';
 
   static Future<void> saveConfig({
     required String url,
@@ -30,12 +33,38 @@ class ApiService {
     };
   }
 
-  /// Sends [message] to the configured OpenAI-compatible endpoint
-  /// (this shape works for OpenRouter, Groq, and most self-hosted
-  /// servers including a typical Colab + ngrok tunnel running an
-  /// OpenAI-compatible server like text-generation-webui or vLLM).
-  static Future<String> sendMessage(String message) async {
-    final config = await loadConfig();
+  static Future<void> saveNewsConfig({
+    required String url,
+    required String key,
+    required String model,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_newsUrlKey, url);
+    await prefs.setString(_newsKeyKey, key);
+    await prefs.setString(_newsModelKey, model);
+  }
+
+  static Future<Map<String, String>> loadNewsConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    return {
+      'url': prefs.getString(_newsUrlKey) ?? '',
+      'key': prefs.getString(_newsKeyKey) ?? '',
+      'model': prefs.getString(_newsModelKey) ?? '',
+    };
+  }
+
+  /// Sends [message] to the main configured endpoint. If [isNewsQuery] is
+  /// true and a separate News endpoint is configured, that one is used
+  /// instead — otherwise it falls back to the main endpoint.
+  static Future<String> sendMessage(String message, {bool isNewsQuery = false}) async {
+    var config = await loadConfig();
+    if (isNewsQuery) {
+      final newsConfig = await loadNewsConfig();
+      if ((newsConfig['url'] ?? '').isNotEmpty) {
+        config = newsConfig;
+      }
+    }
+
     final url = config['url'] ?? '';
     final key = config['key'] ?? '';
     final model = config['model'] ?? '';
@@ -57,8 +86,9 @@ class ApiService {
               'messages': [
                 {
                   'role': 'system',
-                  'content':
-                      'You are Jarvis, a concise, helpful personal voice assistant. Keep answers short and spoken-friendly.'
+                  'content': isNewsQuery
+                      ? 'You are Jarvis, a personal voice assistant. Summarize the latest relevant news concisely in 2-4 spoken-friendly sentences.'
+                      : 'You are Jarvis, a concise, helpful personal voice assistant. Keep answers short and spoken-friendly.'
                 },
                 {'role': 'user', 'content': message},
               ],
@@ -71,7 +101,6 @@ class ApiService {
       }
 
       final data = jsonDecode(response.body);
-      // OpenAI-compatible shape: choices[0].message.content
       final content = data['choices']?[0]?['message']?['content'];
       if (content == null) {
         return "Got a response I couldn't parse. Check that your endpoint returns an OpenAI-style JSON body.";

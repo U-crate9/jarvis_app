@@ -46,10 +46,17 @@ jobs:
           if ! grep -q "RECORD_AUDIO" "$MANIFEST"; then
             sed -i 's/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">\n    <uses-permission android:name="android.permission.RECORD_AUDIO" \/>\n    <uses-permission android:name="android.permission.INTERNET" \/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" \/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" \/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" \/>\n    <uses-permission android:name="android.permission.WAKE_LOCK" \/>\n    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" \/>/' "$MANIFEST"
           fi
+          if ! grep -q "flutter_foreground_task.service.ForegroundService" "$MANIFEST"; then
+            sed -i 's/<\/application>/    <service android:name="com.pravera.flutter_foreground_task.service.ForegroundService" android:foregroundServiceType="microphone" android:exported="false" \/>\n<\/application>/' "$MANIFEST"
+          fi
+          sed -i 's/android:label="jarvis_app"/android:label="Jarvis"/' "$MANIFEST"
           cat "$MANIFEST"
 
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Generate app launcher icon
+        run: dart run flutter_launcher_icons
 
       - name: Build release APK
         run: flutter build apk --release

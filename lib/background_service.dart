@@ -47,6 +47,7 @@ class BackgroundService {
   static Future<void> start() async {
     if (await FlutterForegroundTask.isRunningService) return;
     await FlutterForegroundTask.startService(
+      serviceTypes: [ForegroundServiceTypes.microphone],
       notificationTitle: 'Jarvis',
       notificationText: 'Listening for "Hello Jarvis"…',
       callback: startCallback,

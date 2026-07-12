@@ -6,8 +6,10 @@ import 'api_service.dart';
 import 'settings_screen.dart';
 import 'device_controller.dart';
 import 'background_service.dart';
+import 'wake_word_service.dart';
+import 'dockable_panel.dart';
 
-enum JarvisState { idle, listeningForWake, listeningForCommand, thinking, speaking }
+enum JarvisState { starting, listeningForWake, listeningForCommand, thinking, speaking, wakeWordError }
 
 class ChatEntry {
   final String text;
@@ -26,13 +28,13 @@ class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
   final stt.SpeechToText _speech = stt.SpeechToText();
   final FlutterTts _tts = FlutterTts();
+  final WakeWordService _wakeWord = WakeWordService();
   final List<ChatEntry> _messages = [];
   final ScrollController _scrollController = ScrollController();
 
-  JarvisState _state = JarvisState.idle;
+  JarvisState _state = JarvisState.starting;
   bool _speechAvailable = false;
-  bool _commandCaptured = false;
-  static const String _wakePhrase = 'hello jarvis';
+  String? _wakeWordErrorMsg;
 
   late AnimationController _pulseController;
 
@@ -50,26 +52,30 @@ class _HomeScreenState extends State<HomeScreen>
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
-    _initSpeech();
-    _initBackgroundService();
+    _bootUp();
   }
 
-  Future<void> _initBackgroundService() async {
-    await BackgroundService.requestPermissions();
-    await BackgroundService.start();
-  }
-
-  Future<void> _initSpeech() async {
+  Future<void> _bootUp() async {
     await Permission.microphone.request();
     _speechAvailable = await _speech.initialize(
-      onStatus: _onSpeechStatus,
       onError: (e) => debugPrint('Speech error: $e'),
     );
+
+    await BackgroundService.requestPermissions();
+    await BackgroundService.start();
+
     if (_speechAvailable) {
-      _speakGreeting();
-      _startWakeListening();
+      await _speakGreeting();
+    }
+
+    final error = await _wakeWord.start(onWake: _onWakeDetected);
+    if (error != null) {
+      setState(() {
+        _wakeWordErrorMsg = error;
+        _state = JarvisState.wakeWordError;
+      });
     } else {
-      setState(() {});
+      setState(() => _state = JarvisState.listeningForWake);
     }
   }
 
@@ -90,59 +96,38 @@ class _HomeScreenState extends State<HomeScreen>
     await _tts.speak(greeting);
   }
 
-  void _onSpeechStatus(String status) {
-    // If listening stops on its own (timeout), restart the wake-word loop.
-    if (status == 'done' || status == 'notListening') {
-      if (_state == JarvisState.listeningForWake) {
-        Future.delayed(const Duration(milliseconds: 400), _startWakeListening);
-      } else if (_state == JarvisState.listeningForCommand && !_commandCaptured) {
-        // Timed out waiting for a command after the wake word — go back to
-        // listening for the wake word instead of getting stuck.
-        Future.delayed(const Duration(milliseconds: 400), _startWakeListening);
-      }
-    }
-  }
-
-  void _startWakeListening() {
-    if (!_speechAvailable) return;
-    setState(() => _state = JarvisState.listeningForWake);
-    _speech.listen(
-      onResult: _onWakeResult,
-      listenFor: const Duration(seconds: 30),
-      pauseFor: const Duration(seconds: 5),
-      partialResults: true,
-      cancelOnError: false,
-      listenMode: stt.ListenMode.confirmation,
-    );
-  }
-
-  void _onWakeResult(dynamic result) {
-    final heard = result.recognizedWords.toString().toLowerCase();
-    if (heard.contains(_wakePhrase)) {
-      _speech.stop();
-      _startCommandListening();
-    }
+  void _onWakeDetected() async {
+    if (_state != JarvisState.listeningForWake) return;
+    await _wakeWord.pause();
+    _startCommandListening();
   }
 
   void _startCommandListening() {
-    _commandCaptured = false;
+    if (!_speechAvailable) {
+      _returnToWakeListening();
+      return;
+    }
     setState(() => _state = JarvisState.listeningForCommand);
     _speech.listen(
       onResult: _onCommandResult,
-      listenFor: const Duration(seconds: 12),
+      listenFor: const Duration(seconds: 10),
       pauseFor: const Duration(seconds: 3),
       partialResults: false,
       listenMode: stt.ListenMode.confirmation,
+      onSoundLevelChange: null,
     );
+    // Safety net: if nothing is heard at all, go back to wake listening.
+    Future.delayed(const Duration(seconds: 13), () {
+      if (_state == JarvisState.listeningForCommand) {
+        _returnToWakeListening();
+      }
+    });
   }
 
   Future<void> _onCommandResult(dynamic result) async {
     final command = result.recognizedWords.toString().trim();
-    if (command.isEmpty) {
-      _startWakeListening();
-      return;
-    }
-    _commandCaptured = true;
+    if (command.isEmpty) return;
+    if (_state != JarvisState.listeningForCommand) return;
 
     setState(() {
       _messages.add(ChatEntry(command, true));
@@ -153,39 +138,38 @@ class _HomeScreenState extends State<HomeScreen>
     // Try local device actions first (open app, set alarm) — no API call needed.
     final handledLocally = await DeviceController.tryHandle(command);
     if (handledLocally) {
-      const reply = 'Done, boss.';
-      setState(() {
-        _messages.add(ChatEntry(reply, false));
-        _state = JarvisState.speaking;
-      });
-      _scrollToBottom();
-      await _tts.setSpeechRate(0.48);
-      await _tts.speak(reply);
-      _tts.setCompletionHandler(() => _startWakeListening());
+      await _speakAndShow('Done, boss.');
+      _returnToWakeListening();
       return;
     }
 
-    // Speak a quick filler while we wait on the API, for a snappier feel.
+    final lower = command.toLowerCase();
+    final isNewsQuery = lower.contains('news') || lower.contains('headline');
+
     final filler = (_thinkingFillers..shuffle()).first;
     await _tts.setSpeechRate(0.5);
-    unawaited(_tts.speak(filler));
+    _tts.speak(filler);
 
-    final reply = await ApiService.sendMessage(command);
+    final reply = await ApiService.sendMessage(command, isNewsQuery: isNewsQuery);
+    await _speakAndShow(reply);
+    _returnToWakeListening();
+  }
 
+  Future<void> _speakAndShow(String text) async {
     setState(() {
-      _messages.add(ChatEntry(reply, false));
+      _messages.add(ChatEntry(text, false));
       _state = JarvisState.speaking;
     });
     _scrollToBottom();
-
     await _tts.setSpeechRate(0.48);
-    await _tts.speak(reply);
-    _tts.setCompletionHandler(() {
-      _startWakeListening();
-    });
+    await _tts.speak(text);
   }
 
-  void unawaited(Future<void> future) {}
+  void _returnToWakeListening() async {
+    await _speech.stop();
+    await _wakeWord.resume();
+    if (mounted) setState(() => _state = JarvisState.listeningForWake);
+  }
 
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 100), () {
@@ -201,8 +185,8 @@ class _HomeScreenState extends State<HomeScreen>
 
   String get _statusLabel {
     switch (_state) {
-      case JarvisState.idle:
-        return _speechAvailable ? 'Starting…' : 'Microphone unavailable';
+      case JarvisState.starting:
+        return 'Starting…';
       case JarvisState.listeningForWake:
         return 'Say "Hello Jarvis"';
       case JarvisState.listeningForCommand:
@@ -211,6 +195,8 @@ class _HomeScreenState extends State<HomeScreen>
         return 'Thinking…';
       case JarvisState.speaking:
         return 'Speaking…';
+      case JarvisState.wakeWordError:
+        return 'Wake word setup needed — see Settings';
     }
   }
 
@@ -235,83 +221,128 @@ class _HomeScreenState extends State<HomeScreen>
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const SettingsScreen()),
-            ),
+            ).then((_) => _bootUp()),
           ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          const SizedBox(height: 16),
-          _buildOrb(active),
-          const SizedBox(height: 10),
-          Text(
-            _statusLabel,
-            style: const TextStyle(color: Colors.white54, fontSize: 13, letterSpacing: 1),
+          // Center layer: the orb + status text, always visible behind panels.
+          Positioned.fill(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _buildOrb(active),
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 60),
+                  child: Text(
+                    _statusLabel,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white54, fontSize: 13, letterSpacing: 1),
+                  ),
+                ),
+                if (_wakeWordErrorMsg != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 4),
+                    child: Text(
+                      _wakeWordErrorMsg!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.orangeAccent, fontSize: 11),
+                    ),
+                  ),
+              ],
+            ),
           ),
-          const SizedBox(height: 16),
-          _buildStatusPanels(),
-          const SizedBox(height: 12),
-          Expanded(child: _buildTranscript()),
+          // Draggable dockable panels — pull any one into focus, double-tap
+          // to expand, drag to any corner to redock it.
+          DockablePanel(
+            title: 'TRANSCRIPT',
+            initialCorner: PanelCorner.bottomLeft,
+            child: _buildTranscript(),
+          ),
+          DockablePanel(
+            title: 'STATUS',
+            initialCorner: PanelCorner.topRight,
+            child: _buildStatusPanelContent(),
+          ),
+          DockablePanel(
+            title: 'NEWS',
+            initialCorner: PanelCorner.bottomRight,
+            child: _buildNewsPanelContent(),
+          ),
+          DockablePanel(
+            title: 'QUICK ACTIONS',
+            initialCorner: PanelCorner.topLeft,
+            child: _buildQuickActionsContent(),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildStatusPanels() {
-    final panels = [
-      ('SYSTEM', _speechAvailable ? 'ONLINE' : 'OFFLINE', _speechAvailable),
-      ('MODEL', 'CONNECTED', true),
-      ('MIC', _state == JarvisState.listeningForCommand ? 'ACTIVE' : 'STANDBY',
+  Widget _buildStatusPanelContent() {
+    final rows = [
+      ('System', _speechAvailable ? 'Online' : 'Offline', _speechAvailable),
+      ('Wake word', _wakeWordErrorMsg == null ? 'Active' : 'Setup needed', _wakeWordErrorMsg == null),
+      ('Mic', _state == JarvisState.listeningForCommand ? 'Active' : 'Standby',
           _state == JarvisState.listeningForCommand),
     ];
-    return SizedBox(
-      height: 64,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: panels.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
-        itemBuilder: (context, i) {
-          final (label, value, isUp) = panels[i];
-          return Container(
-            width: 130,
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0B0F1A),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.white12),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(label,
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 10, letterSpacing: 1)),
-                const SizedBox(height: 4),
-                Row(
+    return ListView(
+      padding: EdgeInsets.zero,
+      children: rows
+          .map((r) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: isUp ? const Color(0xFF00E5FF) : Colors.white24,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(value,
-                        style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600)),
+                    Text(r.$1, style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                    Text(r.$2,
+                        style: TextStyle(
+                          color: r.$3 ? const Color(0xFF00E5FF) : Colors.white38,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        )),
                   ],
                 ),
-              ],
-            ),
-          );
-        },
+              ))
+          .toList(),
+    );
+  }
+
+  Widget _buildNewsPanelContent() {
+    final lastNews = _messages.lastWhere(
+      (m) => !m.isUser,
+      orElse: () => ChatEntry('Say "Hello Jarvis, what\'s the news?" to fetch a summary.', false),
+    );
+    return SingleChildScrollView(
+      child: Text(
+        lastNews.text,
+        style: const TextStyle(color: Colors.white70, fontSize: 11, height: 1.3),
       ),
+    );
+  }
+
+  Widget _buildQuickActionsContent() {
+    final actions = [
+      ('Open YouTube', 'open youtube'),
+      ('Open WhatsApp', 'open whatsapp'),
+      ('Alarm 6 AM', 'set an alarm for 6 am'),
+    ];
+    return ListView(
+      padding: EdgeInsets.zero,
+      children: actions
+          .map((a) => GestureDetector(
+                onTap: () => DeviceController.tryHandle(a.$2),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(
+                    '› ${a.$1}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                  ),
+                ),
+              ))
+          .toList(),
     );
   }
 
@@ -347,10 +378,7 @@ class _HomeScreenState extends State<HomeScreen>
               child: Container(
                 width: 54,
                 height: 54,
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Color(0xFF00E5FF),
-                ),
+                decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0xFF00E5FF)),
               ),
             ),
           ),
@@ -362,45 +390,32 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _buildTranscript() {
     if (_messages.isEmpty) {
       return const Center(
-        child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: 40),
-          child: Text(
-            'Say "Hello Jarvis" to start. Your conversation will appear here.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white24, fontSize: 13),
-          ),
+        child: Text(
+          'Say "Hello Jarvis" to start.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.white24, fontSize: 11),
         ),
       );
     }
     return ListView.builder(
       controller: _scrollController,
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+      padding: EdgeInsets.zero,
       itemCount: _messages.length,
       itemBuilder: (context, i) {
         final m = _messages[i];
         return Align(
           alignment: m.isUser ? Alignment.centerRight : Alignment.centerLeft,
           child: Container(
-            margin: const EdgeInsets.symmetric(vertical: 6),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.75,
-            ),
+            margin: const EdgeInsets.symmetric(vertical: 3),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             decoration: BoxDecoration(
-              color: m.isUser
-                  ? const Color(0xFF00E5FF).withOpacity(0.15)
-                  : const Color(0xFF12161F),
-              borderRadius: BorderRadius.circular(16),
+              color: m.isUser ? const Color(0xFF00E5FF).withOpacity(0.15) : const Color(0xFF12161F),
+              borderRadius: BorderRadius.circular(10),
               border: Border.all(
-                color: m.isUser
-                    ? const Color(0xFF00E5FF).withOpacity(0.4)
-                    : Colors.white12,
+                color: m.isUser ? const Color(0xFF00E5FF).withOpacity(0.4) : Colors.white12,
               ),
             ),
-            child: Text(
-              m.text,
-              style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.3),
-            ),
+            child: Text(m.text, style: const TextStyle(color: Colors.white, fontSize: 11, height: 1.25)),
           ),
         );
       },
@@ -412,6 +427,7 @@ class _HomeScreenState extends State<HomeScreen>
     _pulseController.dispose();
     _speech.stop();
     _tts.stop();
+    _wakeWord.dispose();
     super.dispose();
   }
 }
