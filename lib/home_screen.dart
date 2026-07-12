@@ -6,10 +6,9 @@ import 'api_service.dart';
 import 'settings_screen.dart';
 import 'device_controller.dart';
 import 'background_service.dart';
-import 'wake_word_service.dart';
 import 'dockable_panel.dart';
 
-enum JarvisState { starting, listeningForWake, listeningForCommand, thinking, speaking, wakeWordError }
+enum JarvisState { starting, listeningForWake, listeningForCommand, thinking, speaking }
 
 class ChatEntry {
   final String text;
@@ -28,13 +27,13 @@ class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
   final stt.SpeechToText _speech = stt.SpeechToText();
   final FlutterTts _tts = FlutterTts();
-  final WakeWordService _wakeWord = WakeWordService();
   final List<ChatEntry> _messages = [];
   final ScrollController _scrollController = ScrollController();
 
   JarvisState _state = JarvisState.starting;
   bool _speechAvailable = false;
-  String? _wakeWordErrorMsg;
+  bool _commandCaptured = false;
+  static const String _wakePhrase = 'hello jarvis';
 
   late AnimationController _pulseController;
 
@@ -58,6 +57,7 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _bootUp() async {
     await Permission.microphone.request();
     _speechAvailable = await _speech.initialize(
+      onStatus: _onSpeechStatus,
       onError: (e) => debugPrint('Speech error: $e'),
     );
 
@@ -66,16 +66,9 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (_speechAvailable) {
       await _speakGreeting();
-    }
-
-    final error = await _wakeWord.start(onWake: _onWakeDetected);
-    if (error != null) {
-      setState(() {
-        _wakeWordErrorMsg = error;
-        _state = JarvisState.wakeWordError;
-      });
+      _startWakeListening();
     } else {
-      setState(() => _state = JarvisState.listeningForWake);
+      setState(() {});
     }
   }
 
@@ -96,17 +89,39 @@ class _HomeScreenState extends State<HomeScreen>
     await _tts.speak(greeting);
   }
 
-  void _onWakeDetected() async {
-    if (_state != JarvisState.listeningForWake) return;
-    await _wakeWord.pause();
-    _startCommandListening();
+  void _onSpeechStatus(String status) {
+    if (status == 'done' || status == 'notListening') {
+      if (_state == JarvisState.listeningForWake) {
+        Future.delayed(const Duration(milliseconds: 400), _startWakeListening);
+      } else if (_state == JarvisState.listeningForCommand && !_commandCaptured) {
+        Future.delayed(const Duration(milliseconds: 400), _startWakeListening);
+      }
+    }
+  }
+
+  void _startWakeListening() {
+    if (!_speechAvailable) return;
+    setState(() => _state = JarvisState.listeningForWake);
+    _speech.listen(
+      onResult: _onWakeResult,
+      listenFor: const Duration(seconds: 55),
+      pauseFor: const Duration(seconds: 8),
+      partialResults: true,
+      cancelOnError: false,
+      listenMode: stt.ListenMode.confirmation,
+    );
+  }
+
+  void _onWakeResult(dynamic result) {
+    final heard = result.recognizedWords.toString().toLowerCase();
+    if (heard.contains(_wakePhrase)) {
+      _speech.stop();
+      _startCommandListening();
+    }
   }
 
   void _startCommandListening() {
-    if (!_speechAvailable) {
-      _returnToWakeListening();
-      return;
-    }
+    _commandCaptured = false;
     setState(() => _state = JarvisState.listeningForCommand);
     _speech.listen(
       onResult: _onCommandResult,
@@ -114,20 +129,16 @@ class _HomeScreenState extends State<HomeScreen>
       pauseFor: const Duration(seconds: 3),
       partialResults: false,
       listenMode: stt.ListenMode.confirmation,
-      onSoundLevelChange: null,
     );
-    // Safety net: if nothing is heard at all, go back to wake listening.
-    Future.delayed(const Duration(seconds: 13), () {
-      if (_state == JarvisState.listeningForCommand) {
-        _returnToWakeListening();
-      }
-    });
   }
 
   Future<void> _onCommandResult(dynamic result) async {
     final command = result.recognizedWords.toString().trim();
-    if (command.isEmpty) return;
-    if (_state != JarvisState.listeningForCommand) return;
+    if (command.isEmpty) {
+      _startWakeListening();
+      return;
+    }
+    _commandCaptured = true;
 
     setState(() {
       _messages.add(ChatEntry(command, true));
@@ -135,11 +146,10 @@ class _HomeScreenState extends State<HomeScreen>
     });
     _scrollToBottom();
 
-    // Try local device actions first (open app, set alarm) — no API call needed.
     final handledLocally = await DeviceController.tryHandle(command);
     if (handledLocally) {
       await _speakAndShow('Done, boss.');
-      _returnToWakeListening();
+      _startWakeListening();
       return;
     }
 
@@ -152,7 +162,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     final reply = await ApiService.sendMessage(command, isNewsQuery: isNewsQuery);
     await _speakAndShow(reply);
-    _returnToWakeListening();
+    _startWakeListening();
   }
 
   Future<void> _speakAndShow(String text) async {
@@ -163,12 +173,6 @@ class _HomeScreenState extends State<HomeScreen>
     _scrollToBottom();
     await _tts.setSpeechRate(0.48);
     await _tts.speak(text);
-  }
-
-  void _returnToWakeListening() async {
-    await _speech.stop();
-    await _wakeWord.resume();
-    if (mounted) setState(() => _state = JarvisState.listeningForWake);
   }
 
   void _scrollToBottom() {
@@ -186,7 +190,7 @@ class _HomeScreenState extends State<HomeScreen>
   String get _statusLabel {
     switch (_state) {
       case JarvisState.starting:
-        return 'Starting…';
+        return _speechAvailable ? 'Starting…' : 'Microphone unavailable';
       case JarvisState.listeningForWake:
         return 'Say "Hello Jarvis"';
       case JarvisState.listeningForCommand:
@@ -195,8 +199,6 @@ class _HomeScreenState extends State<HomeScreen>
         return 'Thinking…';
       case JarvisState.speaking:
         return 'Speaking…';
-      case JarvisState.wakeWordError:
-        return 'Wake word setup needed — see Settings';
     }
   }
 
@@ -227,7 +229,6 @@ class _HomeScreenState extends State<HomeScreen>
       ),
       body: Stack(
         children: [
-          // Center layer: the orb + status text, always visible behind panels.
           Positioned.fill(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -242,20 +243,9 @@ class _HomeScreenState extends State<HomeScreen>
                     style: const TextStyle(color: Colors.white54, fontSize: 13, letterSpacing: 1),
                   ),
                 ),
-                if (_wakeWordErrorMsg != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 4),
-                    child: Text(
-                      _wakeWordErrorMsg!,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.orangeAccent, fontSize: 11),
-                    ),
-                  ),
               ],
             ),
           ),
-          // Draggable dockable panels — pull any one into focus, double-tap
-          // to expand, drag to any corner to redock it.
           DockablePanel(
             title: 'TRANSCRIPT',
             initialCorner: PanelCorner.bottomLeft,
@@ -284,7 +274,6 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _buildStatusPanelContent() {
     final rows = [
       ('System', _speechAvailable ? 'Online' : 'Offline', _speechAvailable),
-      ('Wake word', _wakeWordErrorMsg == null ? 'Active' : 'Setup needed', _wakeWordErrorMsg == null),
       ('Mic', _state == JarvisState.listeningForCommand ? 'Active' : 'Standby',
           _state == JarvisState.listeningForCommand),
     ];
@@ -427,7 +416,6 @@ class _HomeScreenState extends State<HomeScreen>
     _pulseController.dispose();
     _speech.stop();
     _tts.stop();
-    _wakeWord.dispose();
     super.dispose();
   }
 }

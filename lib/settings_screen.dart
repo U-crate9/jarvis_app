@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'api_service.dart';
-import 'wake_word_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -16,7 +15,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _newsUrlController = TextEditingController();
   final _newsKeyController = TextEditingController();
   final _newsModelController = TextEditingController();
-  final _picovoiceController = TextEditingController();
   bool _saved = false;
 
   @override
@@ -28,14 +26,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _load() async {
     final config = await ApiService.loadConfig();
     final newsConfig = await ApiService.loadNewsConfig();
-    final picovoiceKey = await WakeWordService.loadAccessKey();
     _urlController.text = config['url'] ?? '';
     _keyController.text = config['key'] ?? '';
     _modelController.text = config['model'] ?? '';
     _newsUrlController.text = newsConfig['url'] ?? '';
     _newsKeyController.text = newsConfig['key'] ?? '';
     _newsModelController.text = newsConfig['model'] ?? '';
-    _picovoiceController.text = picovoiceKey;
     setState(() {});
   }
 
@@ -50,7 +46,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       key: _newsKeyController.text.trim(),
       model: _newsModelController.text.trim(),
     );
-    await WakeWordService.saveAccessKey(_picovoiceController.text.trim());
     setState(() => _saved = true);
     Future.delayed(const Duration(seconds: 2), () {
       if (mounted) setState(() => _saved = false);
@@ -100,16 +95,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.all(20),
         child: ListView(
           children: [
-            _sectionTitle(
-              'Wake Word (Picovoice)',
-              'Free Access Key from console.picovoice.ai — needed for silent, always-on "Hello Jarvis" detection.',
-            ),
-            TextField(
-              controller: _picovoiceController,
-              style: const TextStyle(color: Colors.white),
-              obscureText: true,
-              decoration: _decoration('Picovoice Access Key', 'paste your AccessKey here'),
-            ),
             _sectionTitle(
               'Main AI (chat)',
               'Any OpenAI-compatible endpoint: OpenRouter, Groq, or your own server.',

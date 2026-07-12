@@ -17,7 +17,6 @@ dependencies:
   permission_handler: ^11.3.1
   android_intent_plus: ^5.0.0
   flutter_foreground_task: ^8.0.0
-  porcupine_flutter: '>=3.0.0 <5.0.0'
 
 dev_dependencies:
   flutter_test:

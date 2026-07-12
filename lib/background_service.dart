@@ -1,5 +1,9 @@
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
+/// Minimal task handler — its only job is to exist, which keeps Android
+/// from killing the app process when it's backgrounded (home button,
+/// switching apps). The actual listening/AI logic stays in the main
+/// isolate (home_screen.dart) since the process itself stays alive.
 class JarvisTaskHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
