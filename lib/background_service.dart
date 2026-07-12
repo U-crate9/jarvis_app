@@ -1,18 +1,85 @@
+import 'dart:isolate';
+import 'dart:ui';
+import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
-/// Minimal task handler — its only job is to exist, which keeps Android
-/// from killing the app process when it's backgrounded (home button,
-/// switching apps). The actual listening/AI logic stays in the main
-/// isolate (home_screen.dart) since the process itself stays alive.
+const String _wakePhrase = 'hello jarvis';
+
 class JarvisTaskHandler extends TaskHandler {
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  bool _speechReady = false;
+  bool _busy = false;
+
   @override
-  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+    _speechReady = await _speech.initialize(
+      onStatus: _onStatus,
+      onError: (e) => print('Jarvis bg speech error: $e'),
+    );
+    if (_speechReady) {
+      _listenForWake();
+    }
+  }
+
+  void _onStatus(String status) {
+    if ((status == 'done' || status == 'notListening') && !_busy) {
+      Future.delayed(const Duration(milliseconds: 400), _listenForWake);
+    }
+  }
+
+  void _listenForWake() {
+    if (!_speechReady || _busy) return;
+    _speech.listen(
+      onResult: _onResult,
+      listenFor: const Duration(seconds: 55),
+      pauseFor: const Duration(seconds: 8),
+      partialResults: true,
+      cancelOnError: false,
+      listenMode: stt.ListenMode.confirmation,
+    );
+  }
+
+  void _onResult(dynamic result) async {
+    final heard = result.recognizedWords.toString().toLowerCase();
+    if (heard.contains(_wakePhrase) && !_busy) {
+      _busy = true;
+      _speech.stop();
+      await _triggerOverlay();
+      _busy = false;
+      _listenForWake();
+    }
+  }
+
+  Future<void> _triggerOverlay() async {
+    try {
+      final granted = await FlutterOverlayWindow.isPermissionGranted();
+      if (!granted) return;
+      final running = await FlutterOverlayWindow.isActive();
+      if (!running) {
+        await FlutterOverlayWindow.showOverlay(
+          height: 220,
+          width: 300,
+          alignment: OverlayAlignment.center,
+          enableDrag: true,
+          overlayTitle: 'Jarvis',
+        );
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+      FlutterOverlayWindow.shareData({'text': 'Listening…', 'active': true});
+    } catch (e) {
+      print('Jarvis bg overlay error: $e');
+    }
+  }
 
   @override
   void onRepeatEvent(DateTime timestamp) {}
 
   @override
-  Future<void> onDestroy(DateTime timestamp) async {}
+  Future<void> onDestroy(DateTime timestamp) async {
+    _speech.stop();
+  }
 }
 
 class BackgroundService {
